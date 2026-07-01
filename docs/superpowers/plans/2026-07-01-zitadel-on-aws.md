@@ -1,28 +1,28 @@
-# Keycloak on AWS (Off-EC2) Implementation Plan
+# Zitadel on AWS (Off-EC2) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deploy Keycloak on AWS as a cheap dev/demo IdP using ECS Fargate + RDS PostgreSQL behind an ALB, with a Terraform-managed realm and Cognito SAML client — no EC2.
+**Goal:** Deploy Zitadel on AWS as a cheap dev/demo IdP using ECS Fargate + RDS PostgreSQL behind an ALB, with a Terraform-managed project and Cognito OIDC application — no EC2.
 
-**Architecture:** A flat root Terraform configuration consumes an existing VPC/subnets and stands up: ACM (DNS-validated) + Route53 + ALB → ECS Fargate (official Keycloak container) → RDS PostgreSQL. Secrets Manager holds admin and DB credentials. A separate `keycloak.tf` uses the Keycloak provider to create the realm + Cognito SAML client in a documented stage-2 apply.
+**Architecture:** A flat root Terraform configuration consumes an existing VPC/subnets and stands up: ACM (DNS-validated) + Route53 + ALB → ECS Fargate (official Zitadel container) → RDS PostgreSQL. Secrets Manager holds the masterkey, admin, and DB credentials. A separate `zitadel.tf` uses the Zitadel provider to create the project + Cognito OIDC application in a documented stage-2 apply.
 
-**Tech Stack:** Terraform ~> 1.15, AWS provider ~> 5.0, Keycloak provider (`keycloak/keycloak` ~> 5.0), `random` provider, official `quay.io/keycloak/keycloak` container image, PostgreSQL 16.
+**Tech Stack:** Terraform ~> 1.15, AWS provider ~> 5.0, Zitadel provider (`zitadel/zitadel` ~> 2.0), `random` provider, official `ghcr.io/zitadel/zitadel` container image, PostgreSQL 16.
 
 ## Global Constraints
 
 - **Scope:** dev/demo only — NOT production-hardened. Single Fargate task, single-AZ RDS, dev-friendly teardown.
 - **Networking is consumed, never created:** VPC and subnets come from variables (`vpc_id`, `public_subnet_ids`, `private_subnet_ids`). Do NOT create VPC/subnets/NAT/IGW.
-- **Terraform binary:** `~> 1.15`. AWS provider pinned major: `~> 5.0`. Keycloak provider: `~> 5.0`. `random` provider: `~> 3.6`.
-- **Secrets:** never plaintext vars. Use Secrets Manager + `random_password`. Mark sensitive outputs `sensitive = true`.
-- **Security groups:** no `0.0.0.0/0` ingress except HTTP:80-redirect and only where `allowed_cidrs` is explicitly supplied. RDS reachable only from the Fargate SG.
+- **Terraform binary:** `~> 1.15`. AWS provider pinned major: `~> 5.0`. Zitadel provider: `~> 2.0`. `random` provider: `~> 3.6`.
+- **Secrets:** never plaintext vars. Use Secrets Manager + `random_password`. Mark sensitive outputs `sensitive = true`. Zitadel masterkey MUST be exactly 32 characters.
+- **Security groups:** no `0.0.0.0/0` ingress except HTTP:80-redirect and only where `allowed_cidrs` is explicitly supplied. RDS reachable only from the Fargate SG. Zitadel uses a SINGLE container port 8080 (HTTP + gRPC) — there is no separate management port.
 - **Encryption:** RDS `storage_encrypted = true`.
 - **Naming:** singleton resources named `"this"`; descriptive names (`"alb"`, `"fargate"`, `"rds"`) where multiple of a type exist. Tag keys/values kebab-case. Use `default_tags` on the AWS provider.
 - **Block ordering:** `count`/`for_each` → required args → optional args → `tags` → `depends_on` → `lifecycle`. Variables: `description` → `type` → `default` → `validation` → `nullable`.
 - **Layout deviation:** guidelines default to `modules/`+`envs/`; this project intentionally uses a FLAT ROOT config (single demo, no reuse). Documented in the spec.
-- **Keycloak URL:** `https://<domain_name>` everywhere (KC_HOSTNAME, outputs, provider endpoint).
+- **Zitadel URL / issuer:** `https://<domain_name>` everywhere (ZITADEL_EXTERNALDOMAIN, outputs, provider endpoint). TLS terminates at the ALB: `ZITADEL_EXTERNALSECURE=true`, `ZITADEL_EXTERNALPORT=443`, container run with `--tlsMode external`.
 - **Per-task verification:** every task ends with `terraform fmt -check`, `terraform validate`, and (where present) `terraform test`. `tflint` / `trivy config .` run before commits where installed; note if unavailable.
 
-**Spec:** `docs/superpowers/specs/2026-07-01-keycloak-on-aws-serverless-design.md`
+**Spec:** `docs/superpowers/specs/2026-07-01-zitadel-on-aws-design.md`
 
 ---
 
@@ -30,35 +30,37 @@
 
 | File | Responsibility |
 |------|----------------|
-| `providers.tf` | terraform block, provider version constraints, AWS + random providers, `default_tags` |
+| `providers.tf` | terraform block, provider version constraints, AWS + random + zitadel providers, `default_tags` |
 | `variables.tf` | all input variables |
 | `locals.tf` | computed name prefix, common tags, derived values |
-| `secrets.tf` | `random_password` + Secrets Manager secrets (admin, DB) |
+| `secrets.tf` | `random_password` + Secrets Manager secrets (masterkey, admin, DB) |
 | `network.tf` | security groups only (ALB, Fargate, RDS) |
 | `rds.tf` | DB subnet group + RDS PostgreSQL instance |
 | `alb.tf` | ACM cert + validation, Route53 records, ALB, target group, listeners |
 | `iam.tf` | ECS task execution role + task role |
 | `ecs.tf` | CloudWatch log group, ECS cluster, task definition, service |
-| `outputs.tf` | URLs, secret ARN, metadata URL, ALB DNS, RDS endpoint |
-| `keycloak.tf` | Keycloak provider + realm + Cognito SAML client (stage-2) |
+| `outputs.tf` | URLs, secret ARNs, client ID, ALB DNS, RDS endpoint |
+| `zitadel.tf` | Zitadel provider + project + Cognito OIDC application (stage-2) |
 | `tests/variables.tftest.hcl` | native `terraform test` for variable validation |
 | `terraform.tfvars.example` | sample inputs (committed; real `*.tfvars` gitignored) |
-| `README.md` | prerequisites, two-stage apply, Cognito + AD/LDAP setup, cost notes |
+| `README.md` | prerequisites, two-stage apply, Cognito OIDC + LDAP setup, cost notes |
 
-Task order builds bottom-up so each task is independently `validate`-able: providers/vars → secrets → SGs → RDS → ALB → IAM → ECS → outputs → keycloak → tests → README.
+Task order builds bottom-up so each task is independently `validate`-able: providers/vars → secrets → SGs → RDS → ALB → IAM → ECS → outputs → zitadel → tests → README.
+
+**Migration note:** Task 1 was already committed for the Keycloak variant (commit 2106c23). It is being revised, not created fresh — Task 1 below is a rewrite-in-place of `providers.tf`, `variables.tf`, `locals.tf`, `terraform.tfvars.example` to the Zitadel shape.
 
 ---
 
-### Task 1: Providers, Variables, and Locals
+### Task 1: Providers, Variables, and Locals (rewrite for Zitadel)
 
 **Files:**
-- Create: `providers.tf`, `variables.tf`, `locals.tf`, `terraform.tfvars.example`
+- Modify (rewrite in place): `providers.tf`, `variables.tf`, `locals.tf`, `terraform.tfvars.example`
 
 **Interfaces:**
 - Consumes: nothing (first task).
-- Produces: all `var.*` inputs, `local.name_prefix`, `local.tags` used by every later task. Variable names are exactly: `aws_region`, `name_prefix`, `vpc_id`, `public_subnet_ids`, `private_subnet_ids`, `domain_name`, `route53_zone_id`, `allowed_cidrs`, `keycloak_image_tag`, `db_instance_class`, `db_allocated_storage`, `db_engine_version`, `realm_name`, `cognito_acs_url`, `cognito_sp_entity_id`, `log_retention_days`, `tags`.
+- Produces: all `var.*` inputs, `local.name_prefix`, `local.tags`, `local.container_port`. Variable names are exactly: `aws_region`, `name_prefix`, `vpc_id`, `public_subnet_ids`, `private_subnet_ids`, `domain_name`, `route53_zone_id`, `allowed_cidrs`, `zitadel_image_tag`, `db_instance_class`, `db_allocated_storage`, `db_engine_version`, `project_name`, `cognito_callback_url`, `log_retention_days`, `tags`.
 
-- [ ] **Step 1: Write `providers.tf`**
+- [ ] **Step 1: Overwrite `providers.tf`**
 
 ```hcl
 terraform {
@@ -73,9 +75,9 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
-    keycloak = {
-      source  = "keycloak/keycloak"
-      version = "~> 5.0"
+    zitadel = {
+      source  = "zitadel/zitadel"
+      version = "~> 2.0"
     }
   }
 }
@@ -86,22 +88,30 @@ provider "aws" {
   default_tags {
     tags = {
       managed-by = "terraform"
-      project    = "keycloak-on-aws"
+      project    = "zitadel-on-aws"
     }
   }
 }
 
-# Configured with the ALB endpoint + bootstrap admin creds. Only usable in the
-# stage-2 apply, after the Fargate service is healthy. See keycloak.tf / README.
-provider "keycloak" {
-  client_id = "admin-cli"
-  username  = local.keycloak_admin_username
-  password  = random_password.keycloak_admin.result
-  url       = "https://${var.domain_name}"
+# Configured against the ALB endpoint. Only usable in the stage-2 apply, after
+# the Fargate service is healthy AND a service-user key exists. Authentication
+# details (jwt_profile_file / PAT) are finalized in zitadel.tf / README.
+# Left with the domain + insecure=false; credentials supplied at stage-2.
+provider "zitadel" {
+  domain           = var.domain_name
+  insecure         = "false"
+  port             = "443"
+  jwt_profile_file = "zitadel-admin-sa.json"
 }
 ```
 
-- [ ] **Step 2: Write `variables.tf`**
+NOTE: the `zitadel` provider block references a `jwt_profile_file` that is created
+out-of-band during the stage-2 workflow (documented in the README). It is inert
+during stage-1 plan/apply because no `zitadel_*` resources are targeted then.
+Confirm the exact provider argument names against `zitadel/zitadel ~> 2.0`
+(`terraform providers schema -json`) during implementation and adjust if needed.
+
+- [ ] **Step 2: Overwrite `variables.tf`**
 
 ```hcl
 variable "aws_region" {
@@ -112,7 +122,7 @@ variable "aws_region" {
 variable "name_prefix" {
   description = "Prefix applied to resource names and Name tags."
   type        = string
-  default     = "keycloak"
+  default     = "zitadel"
 }
 
 variable "vpc_id" {
@@ -141,7 +151,7 @@ variable "private_subnet_ids" {
 }
 
 variable "domain_name" {
-  description = "FQDN for Keycloak, e.g. keycloak.example.com. Must be within the Route53 hosted zone."
+  description = "FQDN for Zitadel, e.g. id.example.com. Must be within the Route53 hosted zone."
   type        = string
 }
 
@@ -160,10 +170,10 @@ variable "allowed_cidrs" {
   }
 }
 
-variable "keycloak_image_tag" {
-  description = "Tag of the official quay.io/keycloak/keycloak image."
+variable "zitadel_image_tag" {
+  description = "Tag of the official ghcr.io/zitadel/zitadel image."
   type        = string
-  default     = "26.0"
+  default     = "v2.71.12"
 }
 
 variable "db_instance_class" {
@@ -184,26 +194,20 @@ variable "db_engine_version" {
   default     = "16"
 }
 
-variable "realm_name" {
-  description = "Name of the Keycloak realm created in the stage-2 apply."
+variable "project_name" {
+  description = "Name of the Zitadel project created in the stage-2 apply."
   type        = string
   default     = "demo"
 }
 
-variable "cognito_acs_url" {
-  description = "Cognito SAML assertion consumer service URL. Placeholder allowed until Cognito exists."
+variable "cognito_callback_url" {
+  description = "Cognito OIDC callback (redirect) URL for the Zitadel OIDC app. Placeholder allowed until Cognito exists."
   type        = string
-  default     = "https://example.auth.us-east-1.amazoncognito.com/saml2/idpresponse"
-}
-
-variable "cognito_sp_entity_id" {
-  description = "Cognito SAML service-provider entity ID (urn:amazon:cognito:sp:<user-pool-id>). Placeholder allowed."
-  type        = string
-  default     = "urn:amazon:cognito:sp:us-east-1_EXAMPLE"
+  default     = "https://example.auth.us-east-1.amazoncognito.com/oauth2/idpresponse"
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch Logs retention for the Keycloak container."
+  description = "CloudWatch Logs retention for the Zitadel container."
   type        = number
   default     = 7
 }
@@ -215,34 +219,32 @@ variable "tags" {
 }
 ```
 
-- [ ] **Step 3: Write `locals.tf`**
+- [ ] **Step 3: Overwrite `locals.tf`**
 
 ```hcl
 locals {
-  name_prefix             = var.name_prefix
-  keycloak_admin_username = "admin"
-  container_port          = 8080
-  management_port         = 9000
+  name_prefix    = var.name_prefix
+  container_port = 8080
 
   tags = merge(
     {
       environment = "dev"
-      component   = "keycloak"
+      component   = "zitadel"
     },
     var.tags,
   )
 }
 ```
 
-- [ ] **Step 4: Write `terraform.tfvars.example`**
+- [ ] **Step 4: Overwrite `terraform.tfvars.example`**
 
 ```hcl
 aws_region         = "us-east-1"
-name_prefix        = "keycloak"
+name_prefix        = "zitadel"
 vpc_id             = "vpc-0123456789abcdef0"
 public_subnet_ids  = ["subnet-aaa1", "subnet-aaa2"]
 private_subnet_ids = ["subnet-bbb1", "subnet-bbb2"]
-domain_name        = "keycloak.example.com"
+domain_name        = "id.example.com"
 route53_zone_id    = "Z0123456789ABCDEFGHIJ"
 allowed_cidrs      = ["203.0.113.4/32"]
 ```
@@ -250,31 +252,37 @@ allowed_cidrs      = ["203.0.113.4/32"]
 - [ ] **Step 5: Init and validate**
 
 Run: `terraform init -backend=false && terraform fmt -check && terraform validate`
-Expected: providers install; `validate` reports "Success! The configuration is valid." (References to `random_password.keycloak_admin` resolve once Task 2 exists — if validating Task 1 alone, temporarily expect an "unresolved reference" and proceed; it is satisfied after Task 2. To validate Task 1 in isolation, comment out the `keycloak` provider block's `password`/`username` lines, then restore in Task 2.)
+Expected: providers install (aws, random, zitadel); `validate` reports "Success! The configuration is valid." The `zitadel` provider block is self-contained (no cross-resource references), so validation passes with only Task 1 present.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add providers.tf variables.tf locals.tf terraform.tfvars.example
-git commit -m "feat: add providers, variables, and locals"
+git commit -m "refactor: retarget providers, variables, and locals to Zitadel"
 ```
 
 ---
 
-### Task 2: Secrets (admin + DB credentials)
+### Task 2: Secrets (masterkey + admin + DB credentials)
 
 **Files:**
 - Create: `secrets.tf`
 
 **Interfaces:**
-- Consumes: `local.name_prefix`, `local.tags`, `local.keycloak_admin_username`.
-- Produces: `random_password.keycloak_admin`, `random_password.db`, `aws_secretsmanager_secret.keycloak_admin`, `aws_secretsmanager_secret.db`. Later tasks read `aws_secretsmanager_secret.keycloak_admin.arn` and `aws_secretsmanager_secret.db.arn` (JSON secrets with keys `username`/`password`).
+- Consumes: `local.name_prefix`, `local.tags`.
+- Produces: `random_password.masterkey` (32 chars), `random_password.admin`, `random_password.db`, and secrets `aws_secretsmanager_secret.masterkey`, `.admin`, `.db`. Later tasks read `.arn` of each. The `admin` secret JSON has keys `username`/`password`; the `db` secret JSON has keys `username`/`password`; the `masterkey` secret is a raw 32-char string.
 
 - [ ] **Step 1: Write `secrets.tf`**
 
 ```hcl
-resource "random_password" "keycloak_admin" {
-  length  = 24
+# Zitadel masterkey: MUST be exactly 32 characters (encrypts secrets at rest).
+resource "random_password" "masterkey" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "admin" {
+  length  = 20
   special = false
 }
 
@@ -283,24 +291,36 @@ resource "random_password" "db" {
   special = false
 }
 
-resource "aws_secretsmanager_secret" "keycloak_admin" {
-  name        = "${local.name_prefix}-admin"
-  description = "Keycloak bootstrap admin credentials."
+resource "aws_secretsmanager_secret" "masterkey" {
+  name        = "${local.name_prefix}-masterkey"
+  description = "Zitadel masterkey (32 chars) for encrypting secrets at rest."
 
   tags = local.tags
 }
 
-resource "aws_secretsmanager_secret_version" "keycloak_admin" {
-  secret_id = aws_secretsmanager_secret.keycloak_admin.id
+resource "aws_secretsmanager_secret_version" "masterkey" {
+  secret_id     = aws_secretsmanager_secret.masterkey.id
+  secret_string = random_password.masterkey.result
+}
+
+resource "aws_secretsmanager_secret" "admin" {
+  name        = "${local.name_prefix}-admin"
+  description = "Zitadel first-instance admin credentials."
+
+  tags = local.tags
+}
+
+resource "aws_secretsmanager_secret_version" "admin" {
+  secret_id = aws_secretsmanager_secret.admin.id
   secret_string = jsonencode({
-    username = local.keycloak_admin_username
-    password = random_password.keycloak_admin.result
+    username = "zitadel-admin"
+    password = random_password.admin.result
   })
 }
 
 resource "aws_secretsmanager_secret" "db" {
   name        = "${local.name_prefix}-db"
-  description = "RDS PostgreSQL master credentials for Keycloak."
+  description = "RDS PostgreSQL master credentials for Zitadel."
 
   tags = local.tags
 }
@@ -308,7 +328,7 @@ resource "aws_secretsmanager_secret" "db" {
 resource "aws_secretsmanager_secret_version" "db" {
   secret_id = aws_secretsmanager_secret.db.id
   secret_string = jsonencode({
-    username = "keycloak"
+    username = "zitadel"
     password = random_password.db.result
   })
 }
@@ -317,13 +337,13 @@ resource "aws_secretsmanager_secret_version" "db" {
 - [ ] **Step 2: Validate**
 
 Run: `terraform fmt -check && terraform validate`
-Expected: "Success! The configuration is valid." The `keycloak` provider reference to `random_password.keycloak_admin.result` now resolves.
+Expected: "Success! The configuration is valid."
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add secrets.tf
-git commit -m "feat: add Secrets Manager secrets for admin and DB credentials"
+git commit -m "feat: add Secrets Manager secrets for masterkey, admin, and DB"
 ```
 
 ---
@@ -343,7 +363,7 @@ git commit -m "feat: add Secrets Manager secrets for admin and DB credentials"
 # ALB: accepts HTTPS from allowed CIDRs and HTTP (redirect only).
 resource "aws_security_group" "alb" {
   name        = "${local.name_prefix}-alb"
-  description = "Keycloak ALB ingress."
+  description = "Zitadel ALB ingress."
   vpc_id      = var.vpc_id
 
   tags = merge(local.tags, { Name = "${local.name_prefix}-alb" })
@@ -384,7 +404,7 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_fargate" {
 # pull, Secrets Manager, and DB.
 resource "aws_security_group" "fargate" {
   name        = "${local.name_prefix}-fargate"
-  description = "Keycloak Fargate tasks."
+  description = "Zitadel Fargate tasks."
   vpc_id      = var.vpc_id
 
   tags = merge(local.tags, { Name = "${local.name_prefix}-fargate" })
@@ -409,7 +429,7 @@ resource "aws_vpc_security_group_egress_rule" "fargate_all" {
 # RDS: accepts PostgreSQL from Fargate only.
 resource "aws_security_group" "rds" {
   name        = "${local.name_prefix}-rds"
-  description = "Keycloak RDS ingress."
+  description = "Zitadel RDS ingress."
   vpc_id      = var.vpc_id
 
   tags = merge(local.tags, { Name = "${local.name_prefix}-rds" })
@@ -446,7 +466,7 @@ git commit -m "feat: add ALB, Fargate, and RDS security groups"
 
 **Interfaces:**
 - Consumes: `var.private_subnet_ids`, `var.db_instance_class`, `var.db_allocated_storage`, `var.db_engine_version`, `aws_security_group.rds.id`, `random_password.db.result`, `local.name_prefix`, `local.tags`.
-- Produces: `aws_db_instance.this`. Later tasks read `aws_db_instance.this.address`, `.port`, and DB name `keycloak`.
+- Produces: `aws_db_instance.this`. Later tasks read `aws_db_instance.this.address`, `.port`, and DB name `zitadel`.
 
 - [ ] **Step 1: Write `rds.tf`**
 
@@ -468,8 +488,8 @@ resource "aws_db_instance" "this" {
   storage_type      = "gp3"
   storage_encrypted = true
 
-  db_name  = "keycloak"
-  username = "keycloak"
+  db_name  = "zitadel"
+  username = "zitadel"
   password = random_password.db.result
 
   db_subnet_group_name   = aws_db_subnet_group.this.name
@@ -507,7 +527,7 @@ git commit -m "feat: add RDS PostgreSQL instance and subnet group"
 - Create: `alb.tf`
 
 **Interfaces:**
-- Consumes: `var.domain_name`, `var.route53_zone_id`, `var.vpc_id`, `var.public_subnet_ids`, `aws_security_group.alb.id`, `local.container_port`, `local.management_port`, `local.name_prefix`, `local.tags`.
+- Consumes: `var.domain_name`, `var.route53_zone_id`, `var.vpc_id`, `var.public_subnet_ids`, `aws_security_group.alb.id`, `local.container_port`, `local.name_prefix`, `local.tags`.
 - Produces: `aws_lb.this` (read `.dns_name`, `.zone_id`), `aws_lb_target_group.this` (read `.arn`), `aws_lb_listener.https`, `aws_acm_certificate_validation.this`. The ECS service (Task 7) attaches to `aws_lb_target_group.this.arn`.
 
 - [ ] **Step 1: Write `alb.tf`**
@@ -556,6 +576,8 @@ resource "aws_lb" "this" {
   tags = merge(local.tags, { Name = "${local.name_prefix}-alb" })
 }
 
+# Zitadel serves HTTP + gRPC on the single container port; a standard HTTP target
+# group handles the console and OIDC endpoints. Health check uses /debug/healthz.
 resource "aws_lb_target_group" "this" {
   name        = "${local.name_prefix}-tg"
   port        = local.container_port
@@ -564,8 +586,8 @@ resource "aws_lb_target_group" "this" {
   vpc_id      = var.vpc_id
 
   health_check {
-    path     = "/health/ready"
-    port     = local.management_port
+    path     = "/debug/healthz"
+    port     = "traffic-port"
     protocol = "HTTP"
     matcher  = "200"
   }
@@ -639,7 +661,7 @@ git commit -m "feat: add ACM cert, Route53 records, and ALB with HTTPS listener"
 - Create: `iam.tf`
 
 **Interfaces:**
-- Consumes: `aws_secretsmanager_secret.keycloak_admin.arn`, `aws_secretsmanager_secret.db.arn`, `local.name_prefix`, `local.tags`.
+- Consumes: `aws_secretsmanager_secret.masterkey.arn`, `aws_secretsmanager_secret.admin.arn`, `aws_secretsmanager_secret.db.arn`, `local.name_prefix`, `local.tags`.
 - Produces: `aws_iam_role.task_execution` (read `.arn`), `aws_iam_role.task` (read `.arn`).
 
 - [ ] **Step 1: Write `iam.tf`**
@@ -673,7 +695,8 @@ data "aws_iam_policy_document" "read_secrets" {
   statement {
     actions = ["secretsmanager:GetSecretValue"]
     resources = [
-      aws_secretsmanager_secret.keycloak_admin.arn,
+      aws_secretsmanager_secret.masterkey.arn,
+      aws_secretsmanager_secret.admin.arn,
       aws_secretsmanager_secret.db.arn,
     ]
   }
@@ -685,7 +708,7 @@ resource "aws_iam_role_policy" "task_execution_secrets" {
   policy = data.aws_iam_policy_document.read_secrets.json
 }
 
-# Task role: Keycloak needs no AWS API access; role kept minimal for clarity.
+# Task role: Zitadel needs no AWS API access; role kept minimal for clarity.
 resource "aws_iam_role" "task" {
   name               = "${local.name_prefix}-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -714,8 +737,10 @@ git commit -m "feat: add ECS task execution and task IAM roles"
 - Create: `ecs.tf`
 
 **Interfaces:**
-- Consumes: `var.keycloak_image_tag`, `var.domain_name`, `var.private_subnet_ids`, `var.aws_region`, `var.log_retention_days`, `aws_iam_role.task_execution.arn`, `aws_iam_role.task.arn`, `aws_security_group.fargate.id`, `aws_lb_target_group.this.arn`, `aws_lb_listener.https`, `aws_db_instance.this.address`/`.port`, `aws_secretsmanager_secret.keycloak_admin.arn`, `aws_secretsmanager_secret.db.arn`, `local.container_port`, `local.management_port`.
-- Produces: `aws_ecs_service.this`. Terminal compute resource; nothing downstream depends on it except the stage-2 Keycloak provider (runtime dependency, not a Terraform reference).
+- Consumes: `var.zitadel_image_tag`, `var.domain_name`, `var.private_subnet_ids`, `var.aws_region`, `var.log_retention_days`, `aws_iam_role.task_execution.arn`, `aws_iam_role.task.arn`, `aws_security_group.fargate.id`, `aws_lb_target_group.this.arn`, `aws_lb_listener.https`, `aws_db_instance.this.address`/`.port`, `aws_secretsmanager_secret.masterkey.arn`, `aws_secretsmanager_secret.admin.arn`, `aws_secretsmanager_secret.db.arn`, `local.container_port`, `local.name_prefix`.
+- Produces: `aws_ecs_service.this`. Terminal compute resource; nothing downstream depends on it except the stage-2 Zitadel provider (runtime dependency, not a Terraform reference).
+
+**IMPORTANT (verify during implementation):** confirm Zitadel env-var names and the `start-from-init` masterkey flag against the pinned image tag (`docker run --rm ghcr.io/zitadel/zitadel:<tag> start-from-init --help`). The masterkey can be passed via the `ZITADEL_MASTERKEY` env var instead of the `--masterkey` CLI flag; this plan uses the env var so it can be injected from Secrets Manager without embedding it in the command. Adjust names if the pinned version differs.
 
 - [ ] **Step 1: Write `ecs.tf`**
 
@@ -737,37 +762,42 @@ resource "aws_ecs_task_definition" "this" {
   family                   = local.name_prefix
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = 512
-  memory                   = 1024
+  cpu                      = 256
+  memory                   = 512
   execution_role_arn       = aws_iam_role.task_execution.arn
   task_role_arn            = aws_iam_role.task.arn
 
   container_definitions = jsonencode([
     {
-      name      = "keycloak"
-      image     = "quay.io/keycloak/keycloak:${var.keycloak_image_tag}"
+      name      = "zitadel"
+      image     = "ghcr.io/zitadel/zitadel:${var.zitadel_image_tag}"
       essential = true
-      command   = ["start"]
+      command   = ["start-from-init", "--tlsMode", "external"]
 
       portMappings = [
         { containerPort = local.container_port, protocol = "tcp" },
-        { containerPort = local.management_port, protocol = "tcp" },
       ]
 
       environment = [
-        { name = "KC_DB", value = "postgres" },
-        { name = "KC_DB_URL", value = "jdbc:postgresql://${aws_db_instance.this.address}:${aws_db_instance.this.port}/keycloak" },
-        { name = "KC_DB_USERNAME", value = "keycloak" },
-        { name = "KC_HOSTNAME", value = "https://${var.domain_name}" },
-        { name = "KC_PROXY_HEADERS", value = "xforwarded" },
-        { name = "KC_HTTP_ENABLED", value = "true" },
-        { name = "KC_HEALTH_ENABLED", value = "true" },
+        { name = "ZITADEL_EXTERNALDOMAIN", value = var.domain_name },
+        { name = "ZITADEL_EXTERNALPORT", value = "443" },
+        { name = "ZITADEL_EXTERNALSECURE", value = "true" },
+        { name = "ZITADEL_PORT", value = tostring(local.container_port) },
+        { name = "ZITADEL_DATABASE_POSTGRES_HOST", value = aws_db_instance.this.address },
+        { name = "ZITADEL_DATABASE_POSTGRES_PORT", value = tostring(aws_db_instance.this.port) },
+        { name = "ZITADEL_DATABASE_POSTGRES_DATABASE", value = "zitadel" },
+        { name = "ZITADEL_DATABASE_POSTGRES_USER_USERNAME", value = "zitadel" },
+        { name = "ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE", value = "require" },
+        { name = "ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME", value = "zitadel" },
+        { name = "ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE", value = "require" },
+        { name = "ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME", value = "zitadel-admin" },
       ]
 
       secrets = [
-        { name = "KC_DB_PASSWORD", valueFrom = "${aws_secretsmanager_secret.db.arn}:password::" },
-        { name = "KEYCLOAK_ADMIN", valueFrom = "${aws_secretsmanager_secret.keycloak_admin.arn}:username::" },
-        { name = "KEYCLOAK_ADMIN_PASSWORD", valueFrom = "${aws_secretsmanager_secret.keycloak_admin.arn}:password::" },
+        { name = "ZITADEL_MASTERKEY", valueFrom = aws_secretsmanager_secret.masterkey.arn },
+        { name = "ZITADEL_DATABASE_POSTGRES_USER_PASSWORD", valueFrom = "${aws_secretsmanager_secret.db.arn}:password::" },
+        { name = "ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD", valueFrom = "${aws_secretsmanager_secret.db.arn}:password::" },
+        { name = "ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORD", valueFrom = "${aws_secretsmanager_secret.admin.arn}:password::" },
       ]
 
       logConfiguration = {
@@ -775,7 +805,7 @@ resource "aws_ecs_task_definition" "this" {
         options = {
           "awslogs-group"         = aws_cloudwatch_log_group.this.name
           "awslogs-region"        = var.aws_region
-          "awslogs-stream-prefix" = "keycloak"
+          "awslogs-stream-prefix" = "zitadel"
         }
       }
     }
@@ -799,12 +829,11 @@ resource "aws_ecs_service" "this" {
 
   load_balancer {
     target_group_arn = aws_lb_target_group.this.arn
-    container_name   = "keycloak"
+    container_name   = "zitadel"
     container_port   = local.container_port
   }
 
-  # Allow Keycloak time to start and pass health checks before the ALB
-  # considers the task unhealthy.
+  # Allow Zitadel time to init the DB and pass health checks on first boot.
   health_check_grace_period_seconds = 180
 
   depends_on = [aws_lb_listener.https]
@@ -822,7 +851,7 @@ Expected: "Success! The configuration is valid."
 
 ```bash
 git add ecs.tf
-git commit -m "feat: add ECS cluster, Keycloak task definition, and service"
+git commit -m "feat: add ECS cluster, Zitadel task definition, and service"
 ```
 
 ---
@@ -833,30 +862,35 @@ git commit -m "feat: add ECS cluster, Keycloak task definition, and service"
 - Create: `outputs.tf`
 
 **Interfaces:**
-- Consumes: `aws_lb.this.dns_name`, `aws_db_instance.this.address`, `aws_secretsmanager_secret.keycloak_admin.arn`, `var.domain_name`, `var.realm_name`.
-- Produces: outputs `keycloak_url`, `admin_console_url`, `admin_credentials_secret_arn`, `realm_saml_metadata_url`, `alb_dns_name`, `rds_endpoint`.
+- Consumes: `aws_lb.this.dns_name`, `aws_db_instance.this.address`, `aws_secretsmanager_secret.admin.arn`, `var.domain_name`.
+- Produces: outputs `zitadel_url`, `issuer_url`, `console_url`, `admin_credentials_secret_arn`, `discovery_url`, `alb_dns_name`, `rds_endpoint`.
 
 - [ ] **Step 1: Write `outputs.tf`**
 
 ```hcl
-output "keycloak_url" {
-  description = "Base Keycloak URL."
+output "zitadel_url" {
+  description = "Base Zitadel URL."
   value       = "https://${var.domain_name}"
 }
 
-output "admin_console_url" {
-  description = "Keycloak admin console URL."
-  value       = "https://${var.domain_name}/admin/"
+output "issuer_url" {
+  description = "OIDC issuer URL (enter into Cognito as the OIDC provider issuer)."
+  value       = "https://${var.domain_name}"
+}
+
+output "console_url" {
+  description = "Zitadel admin console URL."
+  value       = "https://${var.domain_name}/ui/console"
+}
+
+output "discovery_url" {
+  description = "OIDC discovery document URL."
+  value       = "https://${var.domain_name}/.well-known/openid-configuration"
 }
 
 output "admin_credentials_secret_arn" {
-  description = "Secrets Manager ARN holding the Keycloak admin username/password."
-  value       = aws_secretsmanager_secret.keycloak_admin.arn
-}
-
-output "realm_saml_metadata_url" {
-  description = "SAML IdP metadata URL for the realm; paste into Cognito."
-  value       = "https://${var.domain_name}/realms/${var.realm_name}/protocol/saml/descriptor"
+  description = "Secrets Manager ARN holding the first-instance admin username/password."
+  value       = aws_secretsmanager_secret.admin.arn
 }
 
 output "alb_dns_name" {
@@ -884,59 +918,71 @@ git commit -m "feat: add outputs for URLs, secret ARN, and endpoints"
 
 ---
 
-### Task 9: Keycloak Realm and Cognito SAML Client (stage-2)
+### Task 9: Zitadel Project and Cognito OIDC Application (stage-2)
 
 **Files:**
-- Create: `keycloak.tf`
+- Create: `zitadel.tf`
 
 **Interfaces:**
-- Consumes: `var.realm_name`, `var.cognito_acs_url`, `var.cognito_sp_entity_id`, the `keycloak` provider (configured in Task 1).
-- Produces: `keycloak_realm.this`, `keycloak_saml_client.cognito`. These only apply successfully in the stage-2 apply (after Fargate is healthy).
+- Consumes: `var.project_name`, `var.cognito_callback_url`, the `zitadel` provider (configured in Task 1).
+- Produces: `zitadel_project.this`, `zitadel_application_oidc.cognito`. Read-only attributes `zitadel_application_oidc.cognito.client_id` and `.client_secret` (both sensitive) are consumed by the stage-2 outputs added here.
 
-- [ ] **Step 1: Write `keycloak.tf`**
+**Verify during implementation** (against `zitadel/zitadel ~> 2.0`, `terraform providers schema -json`):
+- Whether `zitadel_project`/`zitadel_application_oidc` require an explicit `org_id`. If required, add a `data "zitadel_org" "default" {}` lookup and set `org_id = data.zitadel_org.default.id` on both resources. The v2 migration guide notes `org_id` became required on `zitadel_project_v2` — confirm which resource name the pinned provider exposes and use the current (non-deprecated) one.
+- Confirm `auth_method_type`/`response_types`/`grant_types` enum values match the schema (values below come from the provider docs).
+
+- [ ] **Step 1: Write `zitadel.tf`**
 
 ```hcl
 # STAGE-2 RESOURCES.
-# These require the Keycloak service to be running and reachable at
-# https://<domain_name>. Apply infra first (stage 1), then apply these:
-#   terraform apply                                  # stage 1: everything else
-#   terraform apply -target=keycloak_realm.this \
-#                   -target=keycloak_saml_client.cognito   # stage 2
-# See README "Two-stage apply".
+# These require the Zitadel service to be running and reachable at
+# https://<domain_name> AND a service-user key file (zitadel-admin-sa.json)
+# present for the provider (see README "Two-stage apply"). Apply infra first,
+# then apply these:
+#   terraform apply                                        # stage 1
+#   terraform apply -target=zitadel_project.this \
+#                   -target=zitadel_application_oidc.cognito   # stage 2
 
-resource "keycloak_realm" "this" {
-  realm   = var.realm_name
-  enabled = true
+resource "zitadel_project" "this" {
+  name = var.project_name
 }
 
-resource "keycloak_saml_client" "cognito" {
-  realm_id  = keycloak_realm.this.id
-  client_id = var.cognito_sp_entity_id
-  name      = "cognito"
-  enabled   = true
+# OIDC application representing the external Cognito User Pool. Cognito uses the
+# authorization-code flow with a confidential (client-secret) web app.
+resource "zitadel_application_oidc" "cognito" {
+  project_id = zitadel_project.this.id
+  name       = "cognito"
 
-  sign_documents          = true
-  sign_assertions         = true
-  include_authn_statement = true
+  redirect_uris    = [var.cognito_callback_url]
+  response_types   = ["OIDC_RESPONSE_TYPE_CODE"]
+  grant_types      = ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE"]
+  app_type         = "OIDC_APP_TYPE_WEB"
+  auth_method_type = "OIDC_AUTH_METHOD_TYPE_BASIC"
+}
 
-  valid_redirect_uris = [var.cognito_acs_url]
+output "cognito_oidc_client_id" {
+  description = "Client ID for the Cognito OIDC application (enter into Cognito)."
+  value       = zitadel_application_oidc.cognito.client_id
+  sensitive   = true
+}
 
-  assertion_consumer_post_url = var.cognito_acs_url
-
-  name_id_format = "email"
+output "cognito_oidc_client_secret" {
+  description = "Client secret for the Cognito OIDC application (enter into Cognito)."
+  value       = zitadel_application_oidc.cognito.client_secret
+  sensitive   = true
 }
 ```
 
 - [ ] **Step 2: Validate (schema only — no apply without a live server)**
 
 Run: `terraform fmt -check && terraform validate`
-Expected: "Success! The configuration is valid." NOTE: `terraform plan`/`apply` against these resources requires a reachable Keycloak; that happens only in the real stage-2 apply. If the exact attribute names differ in Keycloak provider `~> 5.0`, consult `terraform providers schema -json` — the required fields are `realm_id`, `client_id`; the ACS URL argument may be named `assertion_consumer_post_url` (verify against the installed provider version and adjust).
+Expected: "Success! The configuration is valid." NOTE: `terraform plan`/`apply` against these resources requires a reachable Zitadel and the service-user key file; that happens only in the real stage-2 apply.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add keycloak.tf
-git commit -m "feat: add Keycloak realm and Cognito SAML client (stage-2)"
+git add zitadel.tf
+git commit -m "feat: add Zitadel project and Cognito OIDC application (stage-2)"
 ```
 
 ---
@@ -958,14 +1004,14 @@ git commit -m "feat: add Keycloak realm and Cognito SAML client (stage-2)"
 
 mock_provider "aws" {}
 mock_provider "random" {}
-mock_provider "keycloak" {}
+mock_provider "zitadel" {}
 
 variables {
   aws_region         = "us-east-1"
   vpc_id             = "vpc-123"
   public_subnet_ids  = ["subnet-a", "subnet-b"]
   private_subnet_ids = ["subnet-c", "subnet-d"]
-  domain_name        = "keycloak.example.com"
+  domain_name        = "id.example.com"
   route53_zone_id    = "Z123"
   allowed_cidrs      = ["203.0.113.4/32"]
 }
@@ -998,7 +1044,7 @@ run "rejects_empty_allowed_cidrs" {
 - [ ] **Step 2: Run the test suite**
 
 Run: `terraform test`
-Expected: `3 passed, 0 failed`. If mock providers cannot resolve computed attributes used in resource args (e.g. cert validation `for_each`), those runs still exercise variable validation because validation happens before provider calls; if a run errors for a non-validation reason, narrow it with an override or `-verbose` and adjust the mock.
+Expected: `3 passed, 0 failed`. Note: the `zitadel` provider block uses `jwt_profile_file = "zitadel-admin-sa.json"`; with `mock_provider "zitadel"` the file is not read during `plan`, so tests stay offline. If a run errors for a non-validation reason, narrow it with `-verbose` and adjust the mock.
 
 - [ ] **Step 3: Commit**
 
@@ -1021,12 +1067,12 @@ git commit -m "test: add variable validation tests"
 - [ ] **Step 1: Write `README.md`** (follow README guidelines: emoji section headers, copy-pasteable commands)
 
 ````markdown
-# 🔐 Keycloak on AWS (Off-EC2)
+# 🔐 Zitadel on AWS (Off-EC2)
 
-Deploy [Keycloak](https://www.keycloak.org/) as a dev/demo identity provider on
-AWS using ECS Fargate + RDS PostgreSQL behind an Application Load Balancer — no
-EC2 instances to manage. Terraform also provisions a realm and a SAML client for
-federating with Amazon Cognito.
+Deploy [Zitadel](https://zitadel.com/) as a dev/demo identity provider on AWS
+using ECS Fargate + RDS PostgreSQL behind an Application Load Balancer — no EC2
+instances to manage. Terraform also provisions a project and an OIDC application
+for federating with Amazon Cognito.
 
 > **Dev/demo only.** Single Fargate task, single-AZ RDS, and friction-free
 > teardown settings. Not production-hardened.
@@ -1040,7 +1086,7 @@ federating with Amazon Cognito.
   - At least 2 **private** subnets with **outbound internet** (NAT gateway or VPC
     endpoints) for Fargate (image pull + Secrets Manager) and RDS.
 - A **Route53 hosted zone** for the domain you'll use (e.g. `example.com`), and a
-  chosen FQDN (e.g. `keycloak.example.com`).
+  chosen FQDN (e.g. `id.example.com`).
 
 This project does **not** create networking — you supply `vpc_id`,
 `public_subnet_ids`, `private_subnet_ids`.
@@ -1054,9 +1100,7 @@ terraform init
 # Stage 1 — infrastructure (ALB, Fargate, RDS, cert, DNS)
 terraform apply
 
-# Wait until the service is healthy (see "Two-stage apply"), then:
-# Stage 2 — Keycloak realm + Cognito SAML client
-terraform apply -target=keycloak_realm.this -target=keycloak_saml_client.cognito
+# Wait until the service is healthy (see "Two-stage apply"), then stage 2 below.
 ```
 
 Retrieve the admin password:
@@ -1067,57 +1111,68 @@ aws secretsmanager get-secret-value \
   --query SecretString --output text | jq .
 ```
 
-Open the admin console at the `admin_console_url` output and log in as `admin`.
+Open the console at the `console_url` output and log in as `zitadel-admin`.
 
 ## 🔁 Two-stage apply (why)
 
-The Keycloak Terraform provider configures Keycloak over its REST API, so it can
-only run **after** the Fargate service is up and reachable at
-`https://<domain_name>`. Terraform cannot natively wait for ALB health, so:
+The Zitadel Terraform provider configures Zitadel over its API, so it can only
+run **after** the Fargate service is up and reachable at `https://<domain_name>`.
+Terraform cannot natively wait for ALB health, so:
 
 1. **Stage 1:** `terraform apply` creates all infrastructure. The
-   `keycloak_realm`/`keycloak_saml_client` resources will error if applied now —
-   that's expected; use `-target` to exclude them, or apply and let only those
-   two fail, then continue.
+   `zitadel_project`/`zitadel_application_oidc` resources will error if applied
+   now — exclude them with `-target` on the ALB/ECS resources, or apply and let
+   only those two fail, then continue.
 2. **Wait** for the ECS service to reach a healthy target in the ALB target group
-   (check the ECS console or `aws elbv2 describe-target-health`). First boot also
-   creates the database schema.
-3. **Stage 2:** `terraform apply -target=keycloak_realm.this -target=keycloak_saml_client.cognito`.
+   (`aws elbv2 describe-target-health`). First boot also initializes the DB.
+3. **Create a service user for the provider:** log into the console as
+   `zitadel-admin`, create a Service User with Org Owner (or Instance) manager
+   role, generate a **JSON key**, and save it as `zitadel-admin-sa.json` in the
+   project directory (the path referenced by the `zitadel` provider block). This
+   file is gitignored.
+4. **Stage 2:** `terraform apply -target=zitadel_project.this -target=zitadel_application_oidc.cognito`.
    Subsequent `terraform apply` (no `-target`) will then work cleanly.
 
-## 🔗 Configure Amazon Cognito (SAML federation)
+## 🔗 Configure Amazon Cognito (OIDC federation)
 
-Keycloak is the SAML **IdP**; Cognito is the **SP**. After stage 2:
+Zitadel is the OIDC **provider**; Cognito is the **relying party**. After stage 2:
 
-1. Get the realm SAML metadata URL: `terraform output -raw realm_saml_metadata_url`.
+1. Collect the values Cognito needs:
+   - Issuer: `terraform output -raw issuer_url`
+   - Client ID: `terraform output -raw cognito_oidc_client_id`
+   - Client secret: `terraform output -raw cognito_oidc_client_secret`
 2. In the Cognito User Pool → **Sign-in experience → Federated identity provider
-   sign-in → Add identity provider → SAML**.
-3. Set the metadata document via the URL from step 1.
-4. Note the User Pool's **SP entity ID** (`urn:amazon:cognito:sp:<pool-id>`) and
-   the **ACS URL** (`https://<domain>.auth.<region>.amazoncognito.com/saml2/idpresponse`).
-5. Set `cognito_sp_entity_id` and `cognito_acs_url` in `terraform.tfvars` to those
-   real values and re-run stage 2 so the Keycloak SAML client matches.
-6. Map SAML attributes (email, name) in Cognito to user-pool attributes.
-7. Create test users directly in the Keycloak realm (admin console → Users) and
-   log in through the Cognito hosted UI to verify.
+   sign-in → Add identity provider → OpenID Connect (OIDC)**.
+3. Enter the issuer URL, client ID, and client secret from step 1. Cognito reads
+   the discovery document at `<issuer>/.well-known/openid-configuration`.
+4. Set authorized scopes to `openid profile email`.
+5. Note Cognito's callback URL
+   (`https://<domain>.auth.<region>.amazoncognito.com/oauth2/idpresponse`), set
+   `cognito_callback_url` in `terraform.tfvars` to it, and re-run stage 2 so the
+   Zitadel app's redirect URI matches.
+6. Map OIDC claims (email, name) to Cognito user-pool attributes.
+7. Create test users in the Zitadel console and log in through the Cognito hosted
+   UI to verify.
 
-## 🗂️ Optional: AD/LDAP user federation
+## 🗂️ Optional: AD/LDAP identity provider
 
-Not managed by Terraform. To source users from Active Directory/LDAP instead of
-(or in addition to) local Keycloak users:
+Not managed by Terraform. Zitadel can authenticate users against an existing
+Active Directory / LDAP directory (inbound federation):
 
-1. Admin console → your realm → **User federation → Add LDAP provider**.
-2. Set the connection URL (`ldaps://...`), bind DN + credentials, users DN, and
-   `Edit mode` (use `READ_ONLY` to mirror the RES sample).
-3. Configure the username/RDN/UUID/object-class mappings for your directory.
-4. **Test connection** and **Test authentication**, then **Save** and **Sync
-   users**.
+1. Console → your org → **Identity Providers → LDAP**.
+2. Set the server URL (`ldaps://...`), bind DN + password, base DN, and the user
+   filters / attribute mappings for your directory.
+3. Configure creation/linking options, then save.
+4. Users authenticate against LDAP; Zitadel brokers them to Cognito via the same
+   OIDC app.
+
+Note: Zitadel federates against LDAP inbound — it is not itself an LDAP server.
 
 ## 💲 Cost notes
 
 Baseline runs even when idle: RDS `db.t4g.micro` (~$12–15/mo), one Fargate task
-(0.5 vCPU/1 GB), and the ALB (~$16/mo + LCU). `terraform destroy` removes
-everything (dev settings skip the final RDS snapshot).
+(0.25 vCPU/0.5 GB, ~$9/mo), and the ALB (~$16/mo + LCU). `terraform destroy`
+removes everything (dev settings skip the final RDS snapshot).
 
 ## 🧪 Testing
 
@@ -1132,16 +1187,22 @@ terraform test        # variable validation (mock providers, offline)
 See `LICENSE`.
 ````
 
-- [ ] **Step 2: Verify README renders and commands are accurate**
+- [ ] **Step 2: Verify README and add gitignore entry for the SA key**
 
-Run: `terraform fmt -check && terraform validate`
-Expected: still valid; confirm output names in the README match `outputs.tf` exactly (`admin_credentials_secret_arn`, `realm_saml_metadata_url`, `admin_console_url`).
+Confirm output names in the README match `outputs.tf` and `zitadel.tf` exactly
+(`admin_credentials_secret_arn`, `issuer_url`, `console_url`,
+`cognito_oidc_client_id`, `cognito_oidc_client_secret`). Ensure `.gitignore`
+excludes the service-account key:
+
+Run: `grep -q 'zitadel-admin-sa.json' .gitignore || echo 'zitadel-admin-sa.json' >> .gitignore`
+Then: `terraform fmt -check && terraform validate`
+Expected: valid; `.gitignore` contains `zitadel-admin-sa.json`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add README.md
-git commit -m "docs: add README with prerequisites, two-stage apply, Cognito and LDAP setup"
+git add README.md .gitignore
+git commit -m "docs: add README with prerequisites, two-stage apply, Cognito OIDC and LDAP setup"
 ```
 
 ---
@@ -1153,37 +1214,44 @@ git commit -m "docs: add README with prerequisites, two-stage apply, Cognito and
 | Spec item | Task |
 |-----------|------|
 | Consume VPC/subnets via vars, no networking created | Task 1 (vars), Task 3/4/5/7 (consume) |
-| Security groups (ALB/Fargate/RDS) | Task 3 |
-| ALB + HTTPS listener + HTTP redirect + health check | Task 5 |
+| Security groups (ALB/Fargate/RDS), single port 8080 | Task 3 |
+| ALB + HTTPS listener + HTTP redirect + /debug/healthz health check | Task 5 |
 | ACM DNS-validated cert + Route53 alias | Task 5 |
-| ECS Fargate cluster/task/service, Keycloak env config | Task 7 |
+| ECS Fargate, Zitadel start-from-init, EXTERNAL* + masterkey config | Task 7 |
 | CloudWatch logs, 7-day retention | Task 7 |
 | RDS PostgreSQL db.t4g.micro, encrypted, dev teardown | Task 4 |
-| Secrets Manager (admin + DB), random_password | Task 2 |
-| IAM execution + task roles | Task 6 |
-| Keycloak provider realm + Cognito SAML client, stage-2 | Task 9 |
-| Outputs (URLs, secret ARN, metadata URL, endpoints) | Task 8 |
+| Secrets Manager (masterkey 32-char + admin + DB), random_password | Task 2 |
+| IAM execution (3 secrets) + task roles | Task 6 |
+| Zitadel provider project + Cognito OIDC app, stage-2 | Task 9 |
+| Outputs (issuer/console/discovery URLs, secret ARN, client id/secret, endpoints) | Task 8, Task 9 |
 | Flat root layout | File Structure |
-| README: prereqs, two-stage, Cognito, LDAP, cost | Task 11 |
+| README: prereqs, two-stage, Cognito OIDC, LDAP, cost | Task 11 |
 | Variable validation testing | Task 10 |
 
 No gaps.
 
-**2. Placeholder scan:** No TBD/TODO/"add error handling". Cognito values are
-intentional documented placeholders (spec allows). All code blocks are complete.
+**2. Placeholder scan:** No TBD/TODO/"add error handling". `cognito_callback_url`
+is an intentional documented placeholder (spec allows). All code blocks complete.
 
 **3. Type consistency:** Resource names consistent across tasks —
 `aws_db_instance.this` (`.address`/`.port`), `aws_lb_target_group.this.arn`,
-`aws_security_group.{alb,fargate,rds}.id`, `aws_secretsmanager_secret.{keycloak_admin,db}.arn`,
-`keycloak_realm.this` / `keycloak_saml_client.cognito`, `local.container_port` (8080),
-`local.management_port` (9000). Container name `"keycloak"` matches between task
-definition and service `load_balancer` block. DB name/username `keycloak`
-consistent across secrets, RDS, and ECS env.
+`aws_security_group.{alb,fargate,rds}.id`,
+`aws_secretsmanager_secret.{masterkey,admin,db}.arn`, `zitadel_project.this` /
+`zitadel_application_oidc.cognito`, `local.container_port` (8080, single port).
+Container name `"zitadel"` matches between task definition and service
+`load_balancer` block. DB name/username `zitadel` consistent across secrets, RDS,
+and ECS env. Admin username `zitadel-admin` consistent between the admin secret
+(Task 2) and `ZITADEL_FIRSTINSTANCE_ORG_HUMAN_USERNAME` (Task 7).
 
 **Version-verify flags for the implementer** (noted inline in tasks):
-- Task 9: confirm `keycloak_saml_client` argument names against provider `~> 5.0`
-  (`terraform providers schema -json`).
-- Task 1: `keycloak_image_tag` default `26.0` — confirm a current tag exists at
-  build time.
+- Task 1/9: confirm `zitadel/zitadel ~> 2.0` provider auth args
+  (`jwt_profile_file`) and whether `org_id` is required on project/app resources;
+  use the current non-deprecated resource names.
+- Task 7: confirm Zitadel env-var names and `start-from-init` masterkey handling
+  against the pinned image tag; masterkey injected via `ZITADEL_MASTERKEY`.
+- Task 1: `zitadel_image_tag` default `v2.71.12` — confirm a current tag exists.
 - Task 4: `db_engine_version = "16"` — confirm PostgreSQL 16 is offered for
   `db.t4g.micro` in the target region.
+
+**4. Migration note:** Task 1 is a rewrite-in-place of the already-committed
+Keycloak Task 1; the branch was renamed to `feat/zitadel-on-aws-terraform`.
