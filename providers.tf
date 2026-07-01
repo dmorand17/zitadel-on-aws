@@ -10,9 +10,9 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
-    keycloak = {
-      source  = "keycloak/keycloak"
-      version = "~> 5.0"
+    zitadel = {
+      source  = "zitadel/zitadel"
+      version = "~> 2.0"
     }
   }
 }
@@ -23,16 +23,18 @@ provider "aws" {
   default_tags {
     tags = {
       managed-by = "terraform"
-      project    = "keycloak-on-aws"
+      project    = "zitadel-on-aws"
     }
   }
 }
 
-# Configured with the ALB endpoint + bootstrap admin creds. Only usable in the
-# stage-2 apply, after the Fargate service is healthy. See keycloak.tf / README.
-provider "keycloak" {
-  client_id = "admin-cli"
-  username  = local.keycloak_admin_username
-  password  = random_password.keycloak_admin.result
-  url       = "https://${var.domain_name}"
+# Configured against the ALB endpoint. Only usable in the stage-2 apply, after
+# the Fargate service is healthy AND a service-user key exists. Authentication
+# details (jwt_profile_file / PAT) are finalized in zitadel.tf / README.
+# Left with the domain + insecure=false; credentials supplied at stage-2.
+provider "zitadel" {
+  domain           = var.domain_name
+  insecure         = "false"
+  port             = "443"
+  jwt_profile_file = "zitadel-admin-sa.json"
 }

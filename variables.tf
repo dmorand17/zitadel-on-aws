@@ -6,7 +6,7 @@ variable "aws_region" {
 variable "name_prefix" {
   description = "Prefix applied to resource names and Name tags."
   type        = string
-  default     = "keycloak"
+  default     = "zitadel"
 }
 
 variable "vpc_id" {
@@ -35,7 +35,7 @@ variable "private_subnet_ids" {
 }
 
 variable "domain_name" {
-  description = "FQDN for Keycloak, e.g. keycloak.example.com. Must be within the Route53 hosted zone."
+  description = "FQDN for Zitadel, e.g. id.example.com. Must be within the Route53 hosted zone."
   type        = string
 }
 
@@ -54,10 +54,10 @@ variable "allowed_cidrs" {
   }
 }
 
-variable "keycloak_image_tag" {
-  description = "Tag of the official quay.io/keycloak/keycloak image."
+variable "zitadel_image_tag" {
+  description = "Tag of the official ghcr.io/zitadel/zitadel image."
   type        = string
-  default     = "26.0"
+  default     = "v2.71.12"
 }
 
 variable "db_instance_class" {
@@ -78,26 +78,20 @@ variable "db_engine_version" {
   default     = "16"
 }
 
-variable "realm_name" {
-  description = "Name of the Keycloak realm created in the stage-2 apply."
+variable "project_name" {
+  description = "Name of the Zitadel project created in the stage-2 apply."
   type        = string
   default     = "demo"
 }
 
-variable "cognito_acs_url" {
-  description = "Cognito SAML assertion consumer service URL. Placeholder allowed until Cognito exists."
+variable "cognito_callback_url" {
+  description = "Cognito OIDC callback (redirect) URL for the Zitadel OIDC app. Placeholder allowed until Cognito exists."
   type        = string
-  default     = "https://example.auth.us-east-1.amazoncognito.com/saml2/idpresponse"
-}
-
-variable "cognito_sp_entity_id" {
-  description = "Cognito SAML service-provider entity ID (urn:amazon:cognito:sp:<user-pool-id>). Placeholder allowed."
-  type        = string
-  default     = "urn:amazon:cognito:sp:us-east-1_EXAMPLE"
+  default     = "https://example.auth.us-east-1.amazoncognito.com/oauth2/idpresponse"
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch Logs retention for the Keycloak container."
+  description = "CloudWatch Logs retention for the Zitadel container."
   type        = number
   default     = 7
 }
