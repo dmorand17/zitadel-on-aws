@@ -1,0 +1,8 @@
+aws_region         = "us-east-1"
+name_prefix        = "zitadel"
+vpc_id             = "vpc-0123456789abcdef0"
+public_subnet_ids  = ["subnet-aaa1", "subnet-aaa2"]
+private_subnet_ids = ["subnet-bbb1", "subnet-bbb2"]
+domain_name        = "id.example.com"
+route53_zone_id    = "Z0123456789ABCDEFGHIJ"
+allowed_cidrs      = ["203.0.113.4/32"]
