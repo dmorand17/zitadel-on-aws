@@ -41,7 +41,6 @@ mock_provider "aws" {
 }
 
 mock_provider "random" {}
-mock_provider "zitadel" {}
 
 variables {
   aws_region         = "us-east-1"

@@ -1,0 +1,4 @@
+domain_name          = "id.example.com"
+jwt_profile_file     = "zitadel-admin-sa.json"
+project_name         = "demo"
+cognito_callback_url = "https://example.auth.us-east-1.amazoncognito.com/oauth2/idpresponse"
