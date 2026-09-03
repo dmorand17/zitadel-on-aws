@@ -25,7 +25,7 @@ resource "aws_ecs_task_definition" "this" {
       name      = "zitadel"
       image     = "ghcr.io/zitadel/zitadel:${var.zitadel_image_tag}"
       essential = true
-      command   = ["start-from-init", "--tlsMode", "external"]
+      command   = ["start-from-init", "--tlsMode", "external", "--masterkeyFromEnv"]
 
       portMappings = [
         { containerPort = local.container_port, protocol = "tcp" },
@@ -68,11 +68,12 @@ resource "aws_ecs_task_definition" "this" {
 }
 
 resource "aws_ecs_service" "this" {
-  name            = local.name_prefix
-  cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.this.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
+  name                   = local.name_prefix
+  cluster                = aws_ecs_cluster.this.id
+  task_definition        = aws_ecs_task_definition.this.arn
+  desired_count          = 1
+  launch_type            = "FARGATE"
+  enable_execute_command = true
 
   network_configuration {
     subnets          = var.private_subnet_ids

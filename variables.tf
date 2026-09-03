@@ -78,18 +78,6 @@ variable "db_engine_version" {
   default     = "16"
 }
 
-variable "project_name" {
-  description = "Name of the Zitadel project created in the stage-2 apply."
-  type        = string
-  default     = "demo"
-}
-
-variable "cognito_callback_url" {
-  description = "Cognito OIDC callback (redirect) URL for the Zitadel OIDC app. Placeholder allowed until Cognito exists."
-  type        = string
-  default     = "https://example.auth.us-east-1.amazoncognito.com/oauth2/idpresponse"
-}
-
 variable "log_retention_days" {
   description = "CloudWatch Logs retention for the Zitadel container."
   type        = number

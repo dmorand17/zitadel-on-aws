@@ -46,3 +46,22 @@ resource "aws_iam_role" "task" {
 
   tags = local.tags
 }
+
+# Permissions required for ECS Exec (interactive shell into the running task).
+data "aws_iam_policy_document" "ecs_exec" {
+  statement {
+    actions = [
+      "ssmmessages:CreateControlChannel",
+      "ssmmessages:CreateDataChannel",
+      "ssmmessages:OpenControlChannel",
+      "ssmmessages:OpenDataChannel",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "task_exec" {
+  name   = "ecs-exec"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.ecs_exec.json
+}
